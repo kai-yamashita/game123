@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fishing Game — EN / PT / 日本語</title>
+<style>
+  /*
+  Fishing Game — Single file (HTML/CSS/JS only)
+  -------------------------------------------------
+  Features implemented:
+  - Side-view ocean; boat at surface; visible underwater.
+  - J-shaped fishing hook: catch fish by "scooping up" while reeling upward.
+  - Fish types with different points; rarities and behaviors.
+  - Spawner(t, difficulty): returns kinds and counts to spawn per tick.
+  - XP & Level system: XP, next XP; on level-up show Upgrade Catalog with 3 unique random choices.
+  - Simple save in localStorage: { run_highscore, meta_upgrades }.
+  - Multi-language UI (English, Português, 日本語) switchable at runtime.
+  - Playable directly on this canvas; keyboard + on-screen controls.
+  - No frameworks, no build steps.
+
+  Controls:
+  - Left/Right: move boat
+  - Up: reel up   |  Down: drop line
+  - Space: quick toggle drop/reel
+  - P: pause
+  - Click/touch: tap buttons
+  */
+
+  :root {
+    --ui-bg: rgba(15,18,28,0.8);
+    --ui-fg: #e8f0ff;
+    --accent: #4cc9f0;
+    --accent-2: #ffd166;
+    --good: #64dfdf;
+  }
+  html, body { height: 100%; margin: 0; background: #071018; color: var(--ui-fg); font-family: system-ui, -apple-system, Segoe UI, Roboto, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  #wrap { position: relative; height: 100%; display: grid; grid-template-rows: auto 1fr; }
+  header { display: flex; gap: .5rem; align-items: center; padding: .5rem .75rem; background: linear-gradient(180deg,#0b1726 0%, #0b172600 100%); position: relative; z-index: 2; flex-wrap: wrap; }
+  header .group { display:flex; gap:.5rem; align-items:center; background: var(--ui-bg); padding:.4rem .6rem; border-radius: 10px; backdrop-filter: blur(6px); }
+  select, button { color: var(--ui-fg); background: #0f2538; border: 1px solid #20364d; padding: .35rem .6rem; border-radius: 8px; cursor: pointer; }
+  button.primary { background: #184c74; border-color: #2b6ea1; }
+  button.warn { background: #5a2d2d; border-color: #a44; }
+  #hud { position: absolute; left: .75rem; bottom: .75rem; z-index: 2; background: var(--ui-bg); padding:.6rem .8rem; border-radius:12px; display:flex; gap:1rem; align-items:center; backdrop-filter: blur(6px); flex-wrap: wrap; }
+  #hud .meter { width: 200px; height: 10px; background: #103047; border-radius: 999px; overflow: hidden; position: relative; }
+  #hud .meter > i { position:absolute; left:0; top:0; bottom:0; width: 0%; background: linear-gradient(90deg, var(--accent), var(--good)); }
+  #hud .stat { min-width: 120px; }
+  #canvas { width: 100%; height: 90%; display: block; background: #08243a; }
+  #overlay { position:absolute; inset:0; display:none; align-items:center; justify-content:center; background: rgba(3,7,12,.55); z-index: 3; }
+  .card { background: #0b1e2f; border:1px solid #20425f; border-radius: 14px; padding: 1rem; max-width: 720px; width: min(92vw, 720px); box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+  .upgrades { display:grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap:.75rem; margin-top:.75rem; }
+  .upgrade { border:1px solid #2c5577; border-radius:12px; padding:.6rem; background:#0f2a43; cursor:pointer; }
+  .upgrade:hover { outline: 2px solid var(--accent); }
+  .muted { opacity:.85; font-size: .9em; }
+  #touch { position: absolute; right: .75rem; bottom: .75rem; z-index:2; display:flex; flex-direction:column; gap:.5rem; }
+  #touch .row { display:flex; gap:.5rem; }
+  #touch button { width:56px; height:56px; }
+  .pill { padding:.2rem .5rem; border-radius:999px; background:#103047; border:1px solid #2a4a66; }
+</style>
+</head>
+<body>
+  <div id="wrap">
+    <header>
+      <div class="group">
+        <strong id="title">Fishing Game</strong>
+        <span class="pill" id="version">v1.0</span>
+      </div>
+      <div class="group">
+        <label for="langSel" id="lblLang">Language</label>
+        <select id="langSel">
+          <option value="en">English</option>
+          <option value="pt">Português</option>
+          <option value="ja">日本語</option>
+        </select>
+      </div>
+      <div class="group">
+        <label for="diffSel" id="lblDiff">Difficulty</label>
+        <select id="diffSel">
+          <option value="0.8">Easy</option>
+          <option value="1" selected>Normal</option>
+          <option value="1.3">Hard</option>
+        </select>
+      </div>
+      <div class="group">
+        <button id="btnStart" class="primary">Start</button>
+        <button id="btnPause">Pause</button>
+        <button id="btnReset" class="warn">Reset Save</button>
+      </div>
+      <div class="group">
+        <span id="hiLabel">High Score</span>:
+        <strong id="hiScore">0</strong>
+      </div>
+    </header>
+
+    <canvas id="canvas"></canvas>
+
+    <div id="hud">
+      <div class="stat"><span id="lblScore">Score</span>: <strong id="score">0</strong></div>
+      <div class="stat"><span id="lblLevel">Level</span>: <strong id="level">1</strong></div>
+      <div class="stat"><span id="lblXP">XP</span>: <strong id="xp">0</strong> / <span id="xpNext">100</span></div>
+      <div class="meter"><i id="xpBar"></i></div>
+    </div>
+
+    <div id="touch" aria-hidden="true">
+      <div class="row">
+        <button id="btnLeft">◀</button>
+        <button id="btnRight">▶</button>
+      </div>
+      <div class="row">
+        <button id="btnUp">▲</button>
+        <button id="btnDown">▼</button>
+      </div>
+      <div class="row">
+        <button id="btnSpace">⏯</button>
+      </div>
+    </div>
+
+    <div id="overlay">
+      <div class="card">
+        <h2 id="upTitle">Choose 1 Upgrade</h2>
+        <div class="muted" id="upHint">Level up! Pick one of the following upgrades:</div>
+        <div class="upgrades" id="upList"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+// ==========================
+// I18N STRINGS
+// ==========================
+const I18N = {
+  en: {
+    title: "Fishing Game",
+    language: "Language",
+    difficulty: "Difficulty",
+    start: "Start",
+    pause: "Pause",
+    resume: "Resume",
+    resetSave: "Reset Save",
+    highScore: "High Score",
+    score: "Score",
+    level: "Level",
+    xp: "XP",
+    chooseUpgrade: "Choose 1 Upgrade",
+    upgradeHint: "Level up! Pick one of the following upgrades:",
+    diffs: { "0.8": "Easy", "1": "Normal", "1.3": "Hard" },
+  },
+  pt: {
+    title: "Jogo de Pesca",
+    language: "Idioma",
+    difficulty: "Dificuldade",
+    start: "Iniciar",
+    pause: "Pausar",
+    resume: "Retomar",
+    resetSave: "Zerar Salvo",
+    highScore: "Recorde",
+    score: "Pontos",
+    level: "Nível",
+    xp: "XP",
+    chooseUpgrade: "Escolha 1 melhoria",
+    upgradeHint: "Subiu de nível! Escolha uma das melhorias:",
+    diffs: { "0.8": "Fácil", "1": "Normal", "1.3": "Difícil" },
+  },
+  ja: {
+    title: "釣りゲーム",
+    language: "言語",
+    difficulty: "難易度",
+    start: "スタート",
+    pause: "一時停止",
+    resume: "再開",
+    resetSave: "セーブをリセット",
+    highScore: "ハイスコア",
+    score: "スコア",
+    level: "レベル",
+    xp: "XP",
+    chooseUpgrade: "アップグレードを1つ選ぶ",
+    upgradeHint: "レベルアップ！以下から1つ選択してください。",
+    diffs: { "0.8": "やさしい", "1": "ふつう", "1.3": "むずかしい" },
+  }
+};
+
+let LANG = localStorage.getItem('fish_lang') || 'ja';
+
+function applyI18N() {
+  const L = I18N[LANG];
+  $('#title').textContent = L.title;
+  $('#lblLang').textContent = L.language;
+  $('#lblDiff').textContent = L.difficulty;
+  $('#btnStart').textContent = L.start;
+  $('#btnPause').textContent = STATE.paused ? L.resume : L.pause;
+  $('#btnReset').textContent = L.resetSave;
+  $('#hiLabel').textContent = L.highScore;
+  $('#lblScore').textContent = L.score;
+  $('#lblLevel').textContent = L.level;
+  $('#lblXP').textContent = L.xp;
+  $('#upTitle').textContent = L.chooseUpgrade;
+  $('#upHint').textContent = L.upgradeHint;
+  // Difficulty names in current language
+  [...$('#diffSel').options].forEach(opt => opt.textContent = L.diffs[opt.value]);
+}
+
+// ==========================
+// UTILITIES
+// ==========================
+const $ = sel => document.querySelector(sel);
+const clamp = (v,min,max)=> v<min?min:v>max?max:v;
+function rand(a=1,b){ return a + Math.random()*(b-a); }
+function choice(arr){ return arr[(Math.random()*arr.length)|0]; }
+function now(){ return performance.now()/1000; }
+function lerp(a,b,t){ return a + (b-a)*t; }
+
+// Save schema
+const SAVE_KEY = 'fishing_game_save_v1';
+function loadSave(){
+  try { return JSON.parse(localStorage.getItem(SAVE_KEY)||'{}'); } catch { return {}; }
+}
+function saveSave(obj){ localStorage.setItem(SAVE_KEY, JSON.stringify(obj)); }
+
+// ==========================
+// GAME STATE
+// ==========================
+const STATE = {
+  running:false, paused:false,
+  t0:0, last:0, dt:0, time:0,
+  score:0, level:1, xp:0, nextXP:100,
+  hi: 0,
+  difficulty: 1.0,
+  upgrades: { hookR: 14, reel: 130, boat: 140, maxLen: 320, mult: 1.0, maxCatch: 1, baitBias: 0 },
+  meta_upgrades: {}, // optional persistent bonuses
+  fish: [],
+  caught: [], // fish currently attached to hook
+  water: { surfaceY: 110 },
+  boat: { x: 300, y: 80, w: 80, speed: 140 },
+  line: { len: 20, max: 320, x: 300, y:110, vy:0, targetLen: 20 },
+  camera: { offsetY: 0, targetOffsetY: 0 },
+  input: { left:false, right:false, up:false, down:false, space:false },
+  choosePool: [],
+};
+
+// Load hi + meta upgrades
+(function initSave(){
+  const s = loadSave();
+  STATE.hi = s.run_highscore|0;
+  STATE.meta_upgrades = s.meta_upgrades||{};
+  // Apply meta upgrades if any
+  if(STATE.meta_upgrades.hookR) STATE.upgrades.hookR += STATE.meta_upgrades.hookR;
+  if(STATE.meta_upgrades.reel) STATE.upgrades.reel += 10*STATE.meta_upgrades.reel;
+})();
+
+// ==========================
+// CANVAS SETUP
+// ==========================
+const canvas = $('#canvas');
+const ctx = canvas.getContext('2d');
+function resize(){ canvas.width = innerWidth; canvas.height = innerHeight * 0.9; STATE.water.surfaceY = 110; }
+addEventListener('resize', resize);
+resize();
+
+// ==========================
+// FISH DEFINITIONS
+// ==========================
+const FISH_TYPES = {
+  minnow: { name:{en:'Minnow',pt:'Lambari',ja:'小魚'}, color:'#79d2ff', r:10, speed:[40,70], points:8 },
+  mackerel:{ name:{en:'Mackerel',pt:'Cavala',ja:'サバ'}, color:'#58c1a7', r:14, speed:[60,100], points:16 },
+  tuna:    { name:{en:'Tuna',pt:'Atum',ja:'マグロ'}, color:'#3ea0f0', r:18, speed:[80,120], points:35 },
+  jelly:   { name:{en:'Jelly',pt:'Água-viva',ja:'クラゲ'}, color:'#b078ff', r:16, speed:[20,40], points:22 },
+  gold:    { name:{en:'Golden',pt:'Dourado',ja:'金魚(レア)'}, color:'#ffd166', r:13, speed:[70,110], points:60, rare:1 },
+};
+
+// ==========================
+// INPUT
+// ==========================
+addEventListener('keydown',e=>{
+  if(e.repeat) return;
+  if(e.key==='ArrowLeft') STATE.input.left=true;
+  if(e.key==='ArrowRight') STATE.input.right=true;
+  if(e.key==='ArrowUp') STATE.input.up=true;
+  if(e.key==='ArrowDown') STATE.input.down=true;
+  if(e.key===' ') { STATE.input.space=true; toggleDrop(); }
+  if(e.key==='p' || e.key==='P') togglePause();
+});
+addEventListener('keyup',e=>{
+  if(e.key==='ArrowLeft') STATE.input.left=false;
+  if(e.key==='ArrowRight') STATE.input.right=false;
+  if(e.key==='ArrowUp') STATE.input.up=false;
+  if(e.key==='ArrowDown') STATE.input.down=false;
+  if(e.key===' ') STATE.input.space=false;
+});
+
+// Touch controls
+function bindButton(id, on, off){
+  const el = $(id);
+  el.addEventListener('pointerdown', e=>{ e.preventDefault(); on(); el.setPointerCapture(e.pointerId); });
+  el.addEventListener('pointerup', e=>{ off(); });
+  el.addEventListener('pointercancel', e=>{ off(); });
+}
+$('#touch').style.display = (matchMedia('(pointer:coarse)').matches) ? 'block' : 'none';
+bindButton('#btnLeft', ()=>STATE.input.left=true, ()=>STATE.input.left=false);
+bindButton('#btnRight',()=>STATE.input.right=true,()=>STATE.input.right=false);
+bindButton('#btnUp',  ()=>STATE.input.up=true,  ()=>STATE.input.up=false);
+bindButton('#btnDown',()=>STATE.input.down=true,()=>STATE.input.down=false);
+$('#btnSpace').addEventListener('click', toggleDrop);
+
+// UI buttons
+$('#btnStart').addEventListener('click', startGame);
+$('#btnPause').addEventListener('click', togglePause);
+$('#btnReset').addEventListener('click', ()=>{ localStorage.removeItem(SAVE_KEY); STATE.hi=0; updateHUD(); });
+
+$('#langSel').value = LANG;
+$('#langSel').addEventListener('change', ()=>{ LANG = $('#langSel').value; localStorage.setItem('fish_lang', LANG); applyI18N(); });
+$('#diffSel').addEventListener('change', ()=>{ STATE.difficulty = parseFloat($('#diffSel').value); });
+
+// ==========================
+// XP / LEVEL / UPGRADES
+// ==========================
+function xpForLevel(level){ return Math.floor(100 * Math.pow(1.35, level-1)); }
+function grantXP(n){
+  STATE.xp += n;
+  while(STATE.xp >= STATE.nextXP){
+    STATE.xp -= STATE.nextXP;
+    STATE.level++;
+    STATE.nextXP = xpForLevel(STATE.level);
+    queueUpgradeChoices();
+  }
+}
+
+const UPGRADE_LIBRARY = [
+  { id:'hook+', name:{en:'Bigger Hook',pt:'Anzol maior',ja:'フック拡大'}, desc:{en:'+4 hook radius (easier catches)',pt:'+4 de raio do anzol',ja:'フック半径+4'}, apply: ()=> STATE.upgrades.hookR += 4 },
+  { id:'reel+', name:{en:'Reel Speed +',pt:'Velocidade de recolher +',ja:'巻き取り速度+'}, desc:{en:'+20 reel speed',pt:'+20 de velocidade',ja:'巻上げ速度+20'}, apply: ()=> STATE.upgrades.reel += 20 },
+  { id:'boat+', name:{en:'Boat Speed +',pt:'Velocidade do barco +',ja:'船の速度+'}, desc:{en:'+20 boat speed',pt:'+20 de velocidade do barco',ja:'船速度+20'}, apply: ()=> STATE.upgrades.boat += 20 },
+  { id:'line+', name:{en:'Longer Line',pt:'Linha mais longa',ja:'糸を長く'}, desc:{en:'+60 max depth',pt:'+60 de profundidade',ja:'最大深さ+60'}, apply: ()=> STATE.upgrades.maxLen += 60 },
+  { id:'mult+', name:{en:'Score Mult +10%',pt:'Multiplicador +10%',ja:'スコア倍率+10%'}, desc:{en:'10% more points',pt:'Ganha +10% pontos',ja:'ポイント+10%'}, apply: ()=> STATE.upgrades.mult *= 1.10 },
+  { id:'bait+', name:{en:'Better Bait',pt:'Isca melhor',ja:'良いエサ'}, desc:{en:'More valuable fish spawn',pt:'Peixes valiosos aparecem mais',ja:'高得点の魚が増える'}, apply: ()=> STATE.upgrades.baitBias += 1 },
+  { id:'double', name:{en:'Carry Two Fish',pt:'Levar dois peixes',ja:'2匹同時に'}, desc:{en:'Max attached fish +1',pt:'Máx. presos +1',ja:'同時捕獲+1'}, apply: ()=> STATE.upgrades.maxCatch += 1 },
+];
+
+function queueUpgradeChoices(){
+  const pool = [...UPGRADE_LIBRARY];
+  // pick 3 unique
+  const picks = [];
+  while(picks.length<3 && pool.length){
+    const i = (Math.random()*pool.length)|0;
+    picks.push(pool.splice(i,1)[0]);
+  }
+  STATE.choosePool = picks;
+  showUpgradeOverlay(picks);
+}
+
+function showUpgradeOverlay(picks){
+  const list = $('#upList');
+  list.innerHTML = '';
+  picks.forEach(up=>{
+    const div = document.createElement('div');
+    div.className = 'upgrade';
+    const nm = up.name[LANG];
+    const ds = up.desc[LANG];
+    div.innerHTML = `<strong>${nm}</strong><div class="muted">${ds}</div>`;
+    div.addEventListener('click', ()=>{
+      up.apply();
+      hideOverlay();
+    });
+    list.appendChild(div);
+  });
+  $('#overlay').style.display = 'flex';
+  STATE.paused = true; updatePauseBtn();
+}
+function hideOverlay(){ $('#overlay').style.display = 'none'; STATE.paused=false; updatePauseBtn(); }
+
+// ==========================
+// SPAWNER (requested API)
+// Returns a mapping of fish kind -> count to spawn at current time slice
+// Signature: spawner(t, difficulty) => { [kind]: n, ... }
+// t: elapsed seconds; difficulty: >0 multiplier (1 = Normal)
+// ==========================
+function spawner(t, difficulty){
+  // Base rates per 2 seconds window
+  const window = 2.0; // seconds bucket
+  const phase = Math.floor(t / window);
+  const seed = (Math.sin(phase*12.9898)*43758.5453) % 1; // cheap pseudo randomness per bucket
+  const r = Math.abs(seed);
+  const bias = STATE.upgrades.baitBias || 0;
+  const v = difficulty;
+
+  // Baseline counts
+  let minnow = (r < 0.7 ? 1 : 0);
+  let mackerel = (r > 0.3 && r < 0.75 ? 1 : 0);
+  let tuna = (r > 0.8 ? 1 : 0);
+  let jelly = (r > 0.5 && r < 0.6 ? 1 : 0);
+  let gold = (r > 0.92 - 0.04*bias ? 1 : 0);
+
+  // Scale by difficulty (hard = a bit more)
+  if(v>1){
+    if(r>0.4) minnow++;
+    if(r>0.6) mackerel++;
+    if(r>0.85) tuna++;
+  }
+
+  return { minnow, mackerel, tuna, jelly, gold };
+}
+
+// ==========================
+// GAME OBJECTS
+// ==========================
+function spawnFish(kind){
+  const T = FISH_TYPES[kind];
+  const side = Math.random()<0.5? -1:1;
+  const y = rand(STATE.water.surfaceY+40, canvas.height-40);
+  const x = side<0? -30 : canvas.width+30;
+  const speed = rand(...T.speed) * (side<0?1:-1);
+  const f = { kind, x, y, vx: speed, vy: rand(-5,5), r: T.r, color: T.color, points: T.points, caught:false };
+  STATE.fish.push(f);
+}
+
+function updateFish(dt){
+  // Possibly spawn
+  const map = spawner(STATE.time, STATE.difficulty);
+  for(const k in map){ for(let i=0;i<map[k];i++){ if(STATE.fish.length<60) spawnFish(k); } }
+
+  // Move
+  for(let i=STATE.fish.length-1;i>=0;i--){
+    const f = STATE.fish[i];
+    if(f.caught){
+      // follow hook with slight offset stack
+      const idx = STATE.caught.indexOf(f);
+      const offset = 16*idx;
+      f.x += (HOOK.x - offset - f.x)*0.4;
+      f.y += (HOOK.y + 8 + offset - f.y)*0.4;
+      continue;
+    }
+    f.x += f.vx*dt;
+    f.y += f.vy*dt;
+    if(f.y<STATE.water.surfaceY+30){ f.y=STATE.water.surfaceY+30; f.vy = Math.abs(f.vy); }
+    if(f.y>canvas.height-20){ f.y=canvas.height-20; f.vy = -Math.abs(f.vy); }
+    // remove offscreen
+    if((f.vx<0 && f.x<-60) || (f.vx>0 && f.x>canvas.width+60)){
+      STATE.fish.splice(i,1);
+    }
+  }
+}
+
+// HOOK
+const HOOK = { x: STATE.boat.x, y: STATE.water.surfaceY+STATE.line.len, r: STATE.upgrades.hookR, vy:0, prevY:0 };
+
+function updatePlayer(dt){
+  // Boat move
+  const bs = STATE.upgrades.boat;
+  if(STATE.input.left) STATE.boat.x -= bs*dt;
+  if(STATE.input.right) STATE.boat.x += bs*dt;
+  STATE.boat.x = clamp(STATE.boat.x, 50, canvas.width-50);
+
+  // Line target
+  const reel = STATE.upgrades.reel;
+  if(STATE.input.up) STATE.line.targetLen = Math.max(10, STATE.line.targetLen - reel*dt);
+  if(STATE.input.down) STATE.line.targetLen = Math.min(STATE.upgrades.maxLen, STATE.line.targetLen + (reel*0.9)*dt);
+
+  // Ease to target length with smoother interpolation
+  const before = STATE.line.len;
+  STATE.line.len = lerp(STATE.line.len, STATE.line.targetLen, 0.15); // Reduced from 0.25 for smoother movement
+  STATE.line.vy = (STATE.line.len - before)/dt; // positive when going deeper
+
+  // Hook position
+  HOOK.prevY = HOOK.y;
+  HOOK.x = STATE.boat.x;
+  HOOK.y = STATE.water.surfaceY + STATE.line.len;
+  HOOK.r = STATE.upgrades.hookR;
+  HOOK.vy = (HOOK.y - HOOK.prevY)/dt;
+
+  // Camera follows hook when deep underwater (smooth camera movement)
+  const hookDepth = STATE.line.len - 100; // Start camera movement when hook is 100px below surface
+  if (hookDepth > 0) {
+    STATE.camera.targetOffsetY = Math.min(hookDepth * 0.3, 80); // Max camera offset of 80px
+  } else {
+    STATE.camera.targetOffsetY = 0;
+  }
+  STATE.camera.offsetY = lerp(STATE.camera.offsetY, STATE.camera.targetOffsetY, 0.08); // Reduced from 0.1 for even smoother movement
+
+  // When we reach surface with catches -> score
+  if(STATE.caught.length && HOOK.y <= STATE.water.surfaceY + 14){
+    // deliver all
+    let pts = 0;
+    for(const f of STATE.caught){ pts += Math.floor(f.points * STATE.upgrades.mult); STATE.fish.splice(STATE.fish.indexOf(f),1); }
+    STATE.caught.length = 0;
+    STATE.score += pts; grantXP(pts);
+    popText(`+${pts}`, STATE.boat.x, STATE.water.surfaceY-8, '#ffd166');
+  }
+}
+
+function toggleDrop(){
+  const middle = (STATE.upgrades.maxLen - 10)/2;
+  if(STATE.line.targetLen > middle) STATE.line.targetLen = 10; else STATE.line.targetLen = STATE.upgrades.maxLen;
+}
+function togglePause(){ STATE.paused = !STATE.paused; updatePauseBtn(); }
+function updatePauseBtn(){ $('#btnPause').textContent = STATE.paused ? I18N[LANG].resume : I18N[LANG].pause; }
+
+// Catch logic — only when scooping upward (HOOK.vy < 0)
+function tryCatch(){
+  if(HOOK.vy >= -15) return; // require noticeable upward motion
+  if(STATE.caught.length >= STATE.upgrades.maxCatch) return;
+  for(const f of STATE.fish){
+    if(f.caught) continue;
+    const dx = f.x - HOOK.x;
+    const dy = f.y - HOOK.y;
+    const dist = Math.hypot(dx,dy);
+    // Catch when fish center is within hook cup and below hook center (scoop up)
+    if(dy>0 && dist < (HOOK.r - f.r*0.4)){
+      f.caught = true;
+      STATE.caught.push(f);
+      popText(getFishName(f.kind), f.x, f.y, '#aef1ff');
+      if(STATE.caught.length >= STATE.upgrades.maxCatch) break;
+    }
+  }
+}
+
+// ==========================
+// POP TEXTS
+// ==========================
+const POPS = [];
+function popText(txt,x,y,color){ POPS.push({txt,x,y,vy:-22,a:1,color,t:0}); }
+function updatePops(dt){
+  for(let i=POPS.length-1;i>=0;i--){
+    const p=POPS[i]; p.t+=dt; p.y += p.vy*dt; p.a = 1 - p.t*0.8; if(p.a<=0) POPS.splice(i,1);
+  }
+}
+function drawPops(){
+  ctx.save(); ctx.font='bold 16px system-ui, sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  for(const p of POPS){ ctx.globalAlpha = Math.max(0,p.a); ctx.fillStyle = p.color; ctx.fillText(p.txt, p.x, p.y + STATE.camera.offsetY); }
+  ctx.restore();
+}
+
+// ==========================
+// RENDERING
+// ==========================
+function drawBackground(){
+  // Apply camera offset
+  ctx.save();
+  ctx.translate(0, STATE.camera.offsetY);
+  
+  // Sky
+  const sky = ctx.createLinearGradient(0,0,0,STATE.water.surfaceY);
+  sky.addColorStop(0,'#0a2a47'); sky.addColorStop(1,'#0b3350');
+  ctx.fillStyle = sky; ctx.fillRect(0,0,canvas.width,STATE.water.surfaceY);
+  // Sun glow
+  ctx.globalAlpha = .4; ctx.beginPath(); ctx.arc(canvas.width*0.12, 60, 40, 0, Math.PI*2); ctx.fillStyle = '#ffd166'; ctx.fill(); ctx.globalAlpha = 1;
+  // Water
+  const g = ctx.createLinearGradient(0,STATE.water.surfaceY,0,canvas.height);
+  g.addColorStop(0,'#0b3c5a'); g.addColorStop(1,'#07263c');
+  ctx.fillStyle = g; ctx.fillRect(0,STATE.water.surfaceY, canvas.width, canvas.height-STATE.water.surfaceY);
+  // Surface line
+  ctx.fillStyle = '#5ad1ff'; ctx.fillRect(0,STATE.water.surfaceY-2, canvas.width, 2);
+  // Bubbles
+  for(let i=0;i<20;i++){
+    const x = (i*97 + (STATE.time*20)%canvas.width)%canvas.width; const y = canvas.height - (i*53 % (canvas.height-STATE.water.surfaceY));
+    ctx.globalAlpha=.2+(i%5)/10; ctx.beginPath(); ctx.arc(x, y, 2+(i%3), 0, Math.PI*2); ctx.fillStyle='#aef1ff'; ctx.fill(); ctx.globalAlpha=1;
+  }
+  
+  ctx.restore();
+}
+
+function drawBoat(){
+  const {x,y,w} = STATE.boat;
+  ctx.save();
+  ctx.translate(x, y + STATE.camera.offsetY);
+  // Hull
+  ctx.fillStyle = '#2b4d6d'; ctx.beginPath(); ctx.moveTo(-w/2,0); ctx.lineTo(w/2,0); ctx.lineTo(w/2-18,16); ctx.lineTo(-w/2+18,16); ctx.closePath(); ctx.fill();
+  // Mast
+  ctx.fillStyle = '#c1d0e0'; ctx.fillRect(-2,-26,4,26);
+  // Cabin
+  ctx.fillStyle = '#365f86'; ctx.fillRect(-18,-18,36,12);
+  ctx.restore();
+}
+
+function drawHook(){
+  // Line
+  ctx.strokeStyle = '#d4e3f3'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(STATE.boat.x, STATE.boat.y + STATE.camera.offsetY); ctx.lineTo(HOOK.x, HOOK.y-8 + STATE.camera.offsetY); ctx.stroke();
+  // J-hook
+  ctx.save();
+  ctx.translate(HOOK.x, HOOK.y + STATE.camera.offsetY);
+  ctx.strokeStyle = '#e6edf7'; ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(0,0,HOOK.r, Math.PI*0.15, Math.PI*1.5, true); // J shape
+  ctx.stroke();
+  // tip
+  ctx.beginPath(); ctx.moveTo(-HOOK.r*0.75, -HOOK.r*0.85); ctx.lineTo(-HOOK.r*0.1, -HOOK.r*0.25); ctx.stroke();
+  ctx.restore();
+}
+
+function drawFish(){
+  for(const f of STATE.fish){
+    ctx.save();
+    ctx.translate(f.x, f.y + STATE.camera.offsetY);
+    const dir = f.vx>=0 ? 1 : -1;
+    ctx.scale(dir,1);
+    // body
+    ctx.fillStyle = f.color; ctx.beginPath(); ctx.ellipse(0,0,f.r*1.4,f.r,0,0,Math.PI*2); ctx.fill();
+    // tail
+    ctx.beginPath(); ctx.moveTo(-f.r*1.6,0); ctx.lineTo(-f.r*2.2,-f.r*0.7); ctx.lineTo(-f.r*2.2,f.r*0.7); ctx.closePath(); ctx.fill();
+    // eye
+    ctx.fillStyle = '#06141f'; ctx.beginPath(); ctx.arc(f.r*0.7,-f.r*0.2,2.5,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawHUD(){
+  $('#score').textContent = STATE.score|0;
+  $('#level').textContent = STATE.level|0;
+  $('#xp').textContent = STATE.xp|0;
+  $('#xpNext').textContent = STATE.nextXP|0;
+  const pct = Math.max(0, Math.min(1, STATE.xp/STATE.nextXP))*100; $('#xpBar').style.width = pct+'%';
+  $('#hiScore').textContent = STATE.hi|0;
+}
+
+function getFishName(kind){ return FISH_TYPES[kind].name[LANG] || kind; }
+
+// ==========================
+// MAIN LOOP
+// ==========================
+function startGame(){
+  if(!STATE.running){ STATE.running=true; STATE.paused=false; STATE.t0 = now(); STATE.last = now(); STATE.time=0; STATE.score=0; STATE.level=1; STATE.xp=0; STATE.nextXP=xpForLevel(1); STATE.fish.length=0; STATE.caught.length=0; }
+  updatePauseBtn();
+}
+
+function update(dt){
+  if(!STATE.running || STATE.paused) return;
+  STATE.time += dt;
+  updatePlayer(dt);
+  updateFish(dt);
+  tryCatch();
+  updatePops(dt);
+
+  // Save hi score
+  if(STATE.score>STATE.hi){ STATE.hi = STATE.score; const sv = loadSave(); sv.run_highscore = STATE.hi; sv.meta_upgrades = sv.meta_upgrades||STATE.meta_upgrades||{}; saveSave(sv); }
+}
+
+function render(){
+  drawBackground();
+  drawBoat();
+  drawHook();
+  drawFish();
+  drawPops();
+}
+
+function frame(){
+  const t = now();
+  const dt = Math.min(0.035, t-STATE.last); STATE.last = t; STATE.dt = dt;
+  update(dt);
+  render();
+  drawHUD();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ==========================
+// HELPERS: UI text load
+// ==========================
+function updateHUD(){ drawHUD(); }
+applyI18N(); $('#diffSel').dispatchEvent(new Event('change'));
+
+// Start paused with a demo background
+
+</script>
+</body>
+</html>
